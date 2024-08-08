@@ -1,9 +1,7 @@
 import asyncio
-import functools
-import logging
 import logging.config
 import os
-from multiprocessing import Process
+from multiprocessing import Process, Pool
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -102,6 +100,7 @@ class FastStream(AsyncAPIApplication):
 
         self.should_exit = False
         self.processes = []
+        self.pid = os.getpid()
 
         # AsyncAPI information
         self.title = title
@@ -113,7 +112,6 @@ class FastStream(AsyncAPIApplication):
         self.identifier = identifier
         self.asyncapi_tags = tags
         self.external_docs = external_docs
-
 
     def set_broker(self, broker: "BrokerUsecase[Any, Any]") -> None:
         """Set already existed App object broker.
@@ -177,7 +175,7 @@ class FastStream(AsyncAPIApplication):
             raise SetupError("You can't use reload option with multiprocessing")
 
         if workers > 1:
-            logger.info(f"Started parent process [{os.getpid()}]")
+            logger.info(f"Started parent process [{self.pid}]")
 
             for _ in range(workers):
                 process = Process(
@@ -185,16 +183,21 @@ class FastStream(AsyncAPIApplication):
                     args=(log_level, run_extra_options, sleep_time)
                 )
                 process.start()
-
-                logger.info(f"Started child process [{process.pid}]")
                 self.processes.append(process)
+                logger.info(f"Started child process [{process.pid}]")
 
-    def _run_process(self, log_level, run_extra_options, sleep_time):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(self._run(log_level, run_extra_options, sleep_time))
+            while not self.should_exit:
+                await asyncio.sleep(sleep_time)
 
+            for process in self.processes:
+                process.terminate()
+                logger.info(f"Stopping child process [{process.pid}]")
+                process.join()
 
+        elif reload:
+            pass
+        else:
+            await self._run(log_level, run_extra_options, sleep_time)
 
     async def _run(
         self,
@@ -280,3 +283,8 @@ class FastStream(AsyncAPIApplication):
     def _log(self, level: int, message: str) -> None:
         if self.logger is not None:
             self.logger.log(level, message)
+
+    def _run_process(self, log_level, run_extra_options, sleep_time):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(self._run(log_level, run_extra_options, sleep_time))
