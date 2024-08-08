@@ -142,7 +142,6 @@ def run(
 
     elif workers > 1:
         from faststream.cli.supervisors.multiprocess import Multiprocess
-
         Multiprocess(
             target=_run,
             args=(*args, logging.DEBUG),
@@ -162,6 +161,7 @@ def _run(
     app_level: int = logging.INFO,
 ) -> None:
     """Runs the specified application."""
+
     _, app_obj = import_from_string(app)
     if is_factory and callable(app_obj):
         app_obj = app_obj()
@@ -181,7 +181,7 @@ def _run(
 
     try:
         anyio.run(
-            app_obj.run,
+            app_obj._run,
             app_level,
             extra_options,
         )

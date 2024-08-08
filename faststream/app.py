@@ -1,5 +1,9 @@
+import asyncio
+import functools
 import logging
 import logging.config
+import os
+from multiprocessing import Process
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -13,12 +17,13 @@ from typing import (
 )
 
 import anyio
+import typer
 from typing_extensions import ParamSpec
 
 from faststream._compat import ExceptionGroup
 from faststream.asyncapi.proto import AsyncAPIApplication
 from faststream.cli.supervisors.utils import set_exit
-from faststream.exceptions import ValidationError
+from faststream.exceptions import ValidationError, SetupError
 from faststream.log.logging import logger
 from faststream.utils import apply_types, context
 from faststream.utils.functions import drop_response_type, fake_context, to_async
@@ -96,6 +101,7 @@ class FastStream(AsyncAPIApplication):
         )
 
         self.should_exit = False
+        self.processes = []
 
         # AsyncAPI information
         self.title = title
@@ -107,6 +113,7 @@ class FastStream(AsyncAPIApplication):
         self.identifier = identifier
         self.asyncapi_tags = tags
         self.external_docs = external_docs
+
 
     def set_broker(self, broker: "BrokerUsecase[Any, Any]") -> None:
         """Set already existed App object broker.
@@ -155,10 +162,47 @@ class FastStream(AsyncAPIApplication):
         log_level: int = logging.INFO,
         run_extra_options: Optional[Dict[str, "SettingField"]] = None,
         sleep_time: float = 0.1,
+        workers: int = 1,
+        reload: bool = False,
+        watch_extensions: List[str] = ()
     ) -> None:
         """Run FastStream Application."""
-        assert self.broker, "You should setup a broker"  # nosec B101
+        if watch_extensions and not reload:
+            typer.echo(
+                "Extra reload extensions has no effect without `--reload` flag."
+                "\nProbably, you forgot it?"
+            )
 
+        if reload and workers > 1:
+            raise SetupError("You can't use reload option with multiprocessing")
+
+        if workers > 1:
+            logger.info(f"Started parent process [{os.getpid()}]")
+
+            for _ in range(workers):
+                process = Process(
+                    target=self._run_process,
+                    args=(log_level, run_extra_options, sleep_time)
+                )
+                process.start()
+
+                logger.info(f"Started child process [{process.pid}]")
+                self.processes.append(process)
+
+    def _run_process(self, log_level, run_extra_options, sleep_time):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(self._run(log_level, run_extra_options, sleep_time))
+
+
+
+    async def _run(
+        self,
+        log_level: int = logging.INFO,
+        run_extra_options: Optional[Dict[str, "SettingField"]] = None,
+        sleep_time: float = 0.1,
+    ) -> None:
+        assert self.broker, "You should setup a broker"  # nosec B101
         set_exit(lambda *_: self.exit(), sync=False)
 
         async with self.lifespan_context(**(run_extra_options or {})):
